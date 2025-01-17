@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,6 +18,7 @@
  */
 package org.apache.pulsar.client.impl;
 
+import java.time.Duration;
 import lombok.Cleanup;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.pulsar.broker.service.Topic;
@@ -28,6 +29,7 @@ import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.api.TypedMessageBuilder;
 import org.apache.pulsar.common.api.proto.CommandSuccess;
 import org.apache.pulsar.common.naming.TopicName;
+import org.awaitility.Awaitility;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
@@ -68,6 +70,46 @@ public class ProducerCloseTest extends ProducerConsumerBase {
                 {false, true},
                 {false, false}
         };
+    }
+
+    /**
+     * Param1: Producer enableBatch or not
+     * Param2: Send in async way or not
+     */
+    @DataProvider(name = "brokenPipeline")
+    public Object[][] brokenPipeline() {
+        return new Object[][]{
+            {true},
+            {false}
+        };
+    }
+
+    @Test(dataProvider = "brokenPipeline")
+    public void testProducerCloseCallback2(boolean brokenPipeline) throws Exception {
+        initClient();
+        @Cleanup
+        ProducerImpl<byte[]> producer = (ProducerImpl<byte[]>) pulsarClient.newProducer()
+                .topic("testProducerClose")
+                .sendTimeout(5, TimeUnit.SECONDS)
+                .maxPendingMessages(0)
+                .enableBatching(false)
+                .create();
+        final TypedMessageBuilder<byte[]> messageBuilder = producer.newMessage();
+        final TypedMessageBuilder<byte[]> value = messageBuilder.value("test-msg".getBytes(StandardCharsets.UTF_8));
+        producer.getClientCnx().channel().config().setAutoRead(false);
+        final CompletableFuture<MessageId> completableFuture = value.sendAsync();
+        producer.closeAsync();
+        Thread.sleep(3000);
+        if (brokenPipeline) {
+            //producer.getClientCnx().channel().config().setAutoRead(true);
+            producer.getClientCnx().channel().close();
+        } else {
+            producer.getClientCnx().channel().config().setAutoRead(true);
+        }
+        Awaitility.await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            System.out.println(1);
+            Assert.assertTrue(completableFuture.isDone());
+        });
     }
 
     @Test(timeOut = 10_000)
@@ -120,6 +162,7 @@ public class ProducerCloseTest extends ProducerConsumerBase {
 
     @Test(timeOut = 10_000, dataProvider = "produceConf")
     public void brokerCloseTopicTest(boolean enableBatch, boolean isAsyncSend) throws Exception {
+        @Cleanup
         PulsarClient longBackOffClient = PulsarClient.builder()
                 .startingBackoffInterval(5, TimeUnit.SECONDS)
                 .maxBackoffInterval(5, TimeUnit.SECONDS)
@@ -137,7 +180,7 @@ public class ProducerCloseTest extends ProducerConsumerBase {
                 .getTopicReference(TopicName.get(topic).getPartitionedTopicName());
         Assert.assertTrue(topicOptional.isPresent());
         topicOptional.get().close(true).get();
-        Assert.assertEquals(producer.getState(), HandlerState.State.Connecting);
+        Awaitility.await().untilAsserted(() -> Assert.assertEquals(producer.getState(), HandlerState.State.Connecting));
         if (isAsyncSend) {
             producer.newMessage().value("test".getBytes()).sendAsync().get();
         } else {
@@ -146,9 +189,8 @@ public class ProducerCloseTest extends ProducerConsumerBase {
     }
 
     private void initClient() throws PulsarClientException {
-        pulsarClient = PulsarClient.builder().
-                serviceUrl(lookupUrl.toString())
-                .build();
+        replacePulsarClient(PulsarClient.builder().
+                serviceUrl(lookupUrl.toString()));
     }
 
 }

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,9 +19,9 @@
 package org.apache.pulsar.tests.integration.io.sources.debezium;
 
 import com.google.common.base.Preconditions;
+import dev.failsafe.Failsafe;
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
-import net.jodah.failsafe.Failsafe;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.SubscriptionInitialPosition;
@@ -88,7 +88,7 @@ public class PulsarIODebeziumSourceRunner extends PulsarIOSourceRunner {
                 waitForProcessingSourceMessages(tenant, namespace, sourceName, numMessages));
 
         @Cleanup
-        Consumer consumer = client.newConsumer(getSchema(jsonWithEnvelope))
+        Consumer<?> consumer = client.newConsumer(getSchema(jsonWithEnvelope))
                 .topic(consumeTopicName)
                 .subscriptionName("debezium-source-tester")
                 .subscriptionType(SubscriptionType.Exclusive)

@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,20 +18,28 @@
  */
 package org.apache.pulsar.client.impl;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
-
+import static org.mockito.Mockito.when;
+import static org.testng.Assert.assertTrue;
+import io.netty.buffer.ByteBuf;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
+import java.util.regex.Pattern;
+import lombok.Cleanup;
 import org.apache.pulsar.client.api.Consumer;
 import org.apache.pulsar.client.api.Message;
 import org.apache.pulsar.client.api.Messages;
@@ -39,7 +47,10 @@ import org.apache.pulsar.client.api.PulsarClient;
 import org.apache.pulsar.client.api.PulsarClientException;
 import org.apache.pulsar.client.impl.conf.ClientConfigurationData;
 import org.apache.pulsar.client.impl.conf.ConsumerConfigurationData;
+import org.apache.pulsar.client.impl.conf.TopicConsumerConfigurationData;
 import org.apache.pulsar.client.util.ExecutorProvider;
+import org.apache.pulsar.client.util.ScheduledExecutorProvider;
+import org.apache.pulsar.common.util.Backoff;
 import org.awaitility.Awaitility;
 import org.testng.Assert;
 import org.testng.annotations.AfterMethod;
@@ -47,23 +58,28 @@ import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
 public class ConsumerImplTest {
+    private final String topic = "non-persistent://tenant/ns1/my-topic";
 
     private ExecutorProvider executorProvider;
     private ExecutorService internalExecutor;
     private ConsumerImpl<byte[]> consumer;
-    private ConsumerConfigurationData consumerConf;
+    private ConsumerConfigurationData<byte[]> consumerConf;
 
     @BeforeMethod(alwaysRun = true)
     public void setUp() {
+        consumerConf = new ConsumerConfigurationData<>();
+        createConsumer(consumerConf);
+    }
+
+    private void createConsumer(ConsumerConfigurationData consumerConf) {
         executorProvider = new ExecutorProvider(1, "ConsumerImplTest");
         internalExecutor = Executors.newSingleThreadScheduledExecutor();
-        consumerConf = new ConsumerConfigurationData<>();
+
         PulsarClientImpl client = ClientTestFixtures.createPulsarClientMock(executorProvider, internalExecutor);
         ClientConfigurationData clientConf = client.getConfiguration();
         clientConf.setOperationTimeoutMs(100);
         clientConf.setStatsIntervalSeconds(0);
-        CompletableFuture<Consumer<ConsumerImpl>> subscribeFuture = new CompletableFuture<>();
-        String topic = "non-persistent://tenant/ns1/my-topic";
+        CompletableFuture<Consumer<byte[]>> subscribeFuture = new CompletableFuture<>();
 
         consumerConf.setSubscriptionName("test-sub");
         consumer = ConsumerImpl.newConsumerImpl(client, topic, consumerConf,
@@ -193,7 +209,7 @@ public class ConsumerImplTest {
         Exception checkException = null;
         try {
             if (consumer != null) {
-                consumer.negativeAcknowledge(new MessageIdImpl(-1, -1, -1));
+                consumer.negativeAcknowledge(new MessageIdImpl(0, 0, -1));
                 consumer.close();
             }
         } catch (Exception e) {
@@ -221,6 +237,7 @@ public class ConsumerImplTest {
 
     @Test(expectedExceptions = IllegalArgumentException.class)
     public void testCreateConsumerWhenSchemaIsNull() throws PulsarClientException {
+        @Cleanup
         PulsarClient client = PulsarClient.builder()
             .serviceUrl("pulsar://127.0.0.1:6650")
             .build();
@@ -238,5 +255,52 @@ public class ConsumerImplTest {
         consumer.setCurrentReceiverQueueSize(size + 100);
         Assert.assertEquals(consumer.getCurrentReceiverQueueSize(), size + 100);
         Assert.assertEquals(consumer.getAvailablePermits(), permits + 100);
+    }
+
+    @Test
+    public void testTopicPriorityLevel() {
+        ConsumerConfigurationData<Object> consumerConf = new ConsumerConfigurationData<>();
+        consumerConf.getTopicConfigurations().add(
+                TopicConsumerConfigurationData.ofTopicName(topic, 1));
+
+        createConsumer(consumerConf);
+
+        assertThat(consumer.getPriorityLevel()).isEqualTo(1);
+    }
+
+    @Test
+    public void testSeekAsyncInternal() {
+        // given
+        ClientCnx cnx = mock(ClientCnx.class);
+        CompletableFuture<ProducerResponse> clientReq = new CompletableFuture<>();
+        when(cnx.sendRequestWithId(any(ByteBuf.class), anyLong())).thenReturn(clientReq);
+
+        ScheduledExecutorProvider provider = mock(ScheduledExecutorProvider.class);
+        ScheduledExecutorService scheduledExecutorService = mock(ScheduledExecutorService.class);
+        when(provider.getExecutor()).thenReturn(scheduledExecutorService);
+        when(consumer.getClient().getScheduledExecutorProvider()).thenReturn(provider);
+
+        CompletableFuture<Void> result = consumer.seekAsync(1L);
+        verify(scheduledExecutorService, atLeast(1)).schedule(any(Runnable.class), anyLong(), any(TimeUnit.class));
+
+        consumer.setClientCnx(cnx);
+        consumer.setState(HandlerState.State.Ready);
+        consumer.seekStatus.set(ConsumerImpl.SeekStatus.NOT_STARTED);
+
+        // when
+        CompletableFuture<Void> firstResult = consumer.seekAsync(1L);
+        CompletableFuture<Void> secondResult = consumer.seekAsync(1L);
+
+        clientReq.complete(null);
+
+        assertTrue(firstResult.isDone());
+        assertTrue(secondResult.isCompletedExceptionally());
+        verify(cnx, times(1)).sendRequestWithId(any(ByteBuf.class), anyLong());
+    }
+
+    @Test(invocationTimeOut = 1000)
+    public void testAutoGenerateConsumerName() {
+        Pattern consumerNamePattern = Pattern.compile("[a-zA-Z0-9]{5}");
+        assertTrue(consumerNamePattern.matcher(consumer.getConsumerName()).matches());
     }
 }

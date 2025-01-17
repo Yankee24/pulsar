@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,8 +19,7 @@
 package org.apache.bookkeeper.mledger.impl.cache;
 
 import static org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl.createManagedLedgerException;
-import com.google.common.collect.Lists;
-import com.google.common.primitives.Longs;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import org.apache.bookkeeper.client.api.LedgerEntry;
@@ -28,9 +27,9 @@ import org.apache.bookkeeper.client.api.ReadHandle;
 import org.apache.bookkeeper.mledger.AsyncCallbacks;
 import org.apache.bookkeeper.mledger.Entry;
 import org.apache.bookkeeper.mledger.ManagedLedgerException;
+import org.apache.bookkeeper.mledger.Position;
 import org.apache.bookkeeper.mledger.impl.EntryImpl;
 import org.apache.bookkeeper.mledger.impl.ManagedLedgerImpl;
-import org.apache.bookkeeper.mledger.impl.PositionImpl;
 import org.apache.bookkeeper.mledger.intercept.ManagedLedgerInterceptor;
 import org.apache.commons.lang3.tuple.Pair;
 
@@ -57,7 +56,7 @@ public class EntryCacheDisabled implements EntryCache {
     }
 
     @Override
-    public void invalidateEntries(PositionImpl lastPosition) {
+    public void invalidateEntries(Position lastPosition) {
     }
 
     @Override
@@ -80,9 +79,9 @@ public class EntryCacheDisabled implements EntryCache {
     @Override
     public void asyncReadEntry(ReadHandle lh, long firstEntry, long lastEntry, boolean isSlowestReader,
                                final AsyncCallbacks.ReadEntriesCallback callback, Object ctx) {
-        lh.readAsync(firstEntry, lastEntry).thenAcceptAsync(
+        ReadEntryUtils.readAsync(ml, lh, firstEntry, lastEntry).thenAcceptAsync(
                 ledgerEntries -> {
-                    List<Entry> entries = Lists.newArrayList();
+                    List<Entry> entries = new ArrayList<>();
                     long totalSize = 0;
                     try {
                         for (LedgerEntry e : ledgerEntries) {
@@ -94,20 +93,21 @@ public class EntryCacheDisabled implements EntryCache {
                     } finally {
                         ledgerEntries.close();
                     }
+                    ml.getMbean().recordReadEntriesOpsCacheMisses(entries.size(), totalSize);
                     ml.getFactory().getMbean().recordCacheMiss(entries.size(), totalSize);
                     ml.getMbean().addReadEntriesSample(entries.size(), totalSize);
 
                     callback.readEntriesComplete(entries, ctx);
-                }, ml.getExecutor().chooseThread(ml.getName())).exceptionally(exception -> {
+                }, ml.getExecutor()).exceptionally(exception -> {
             callback.readEntriesFailed(createManagedLedgerException(exception), ctx);
             return null;
         });
     }
 
     @Override
-    public void asyncReadEntry(ReadHandle lh, PositionImpl position, AsyncCallbacks.ReadEntryCallback callback,
+    public void asyncReadEntry(ReadHandle lh, Position position, AsyncCallbacks.ReadEntryCallback callback,
                                Object ctx) {
-        lh.readAsync(position.getEntryId(), position.getEntryId()).whenCompleteAsync(
+        ReadEntryUtils.readAsync(ml, lh, position.getEntryId(), position.getEntryId()).whenCompleteAsync(
                 (ledgerEntries, exception) -> {
                     if (exception != null) {
                         ml.invalidateLedgerHandle(lh);
@@ -121,6 +121,7 @@ public class EntryCacheDisabled implements EntryCache {
                             LedgerEntry ledgerEntry = iterator.next();
                             EntryImpl returnEntry = RangeEntryCacheManagerImpl.create(ledgerEntry, interceptor);
 
+                            ml.getMbean().recordReadEntriesOpsCacheMisses(1, returnEntry.getLength());
                             ml.getFactory().getMbean().recordCacheMiss(1, returnEntry.getLength());
                             ml.getMbean().addReadEntriesSample(1, returnEntry.getLength());
                             callback.readEntryComplete(returnEntry, ctx);
@@ -131,7 +132,7 @@ public class EntryCacheDisabled implements EntryCache {
                     } finally {
                         ledgerEntries.close();
                     }
-                }, ml.getExecutor().chooseThread(ml.getName()));
+                }, ml.getExecutor());
     }
 
     @Override
@@ -141,7 +142,7 @@ public class EntryCacheDisabled implements EntryCache {
 
     @Override
     public int compareTo(EntryCache other) {
-        return Longs.compare(getSize(), other.getSize());
+        return Long.compare(getSize(), other.getSize());
     }
 
 }

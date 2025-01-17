@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,6 +22,7 @@ import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
+import dev.failsafe.Failsafe;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -46,7 +47,6 @@ import com.google.gson.Gson;
 
 import lombok.Cleanup;
 import lombok.extern.slf4j.Slf4j;
-import net.jodah.failsafe.Failsafe;
 
 @Slf4j
 public class PulsarIOSinkRunner extends PulsarIOTestRunner {
@@ -55,7 +55,7 @@ public class PulsarIOSinkRunner extends PulsarIOTestRunner {
 		super(cluster, functionRuntimeType);
 	}
 
-	@SuppressWarnings({ "rawtypes", "unchecked" })
+	@SuppressWarnings({ "rawtypes" })
 	public <T extends GenericContainer> void runSinkTester(SinkTester<T> tester, boolean builtin) throws Exception {
         final String tenant = TopicName.PUBLIC_TENANT;
         final String namespace = TopicName.DEFAULT_NAMESPACE;
@@ -201,7 +201,7 @@ public class PulsarIOSinkRunner extends PulsarIOTestRunner {
         } else {
             commands = new String[] {
                     PulsarCluster.ADMIN_SCRIPT,
-                    "sink", "create",
+                    "sink", "update",
                     "--tenant", tenant,
                     "--namespace", namespace,
                     "--name", sinkName,

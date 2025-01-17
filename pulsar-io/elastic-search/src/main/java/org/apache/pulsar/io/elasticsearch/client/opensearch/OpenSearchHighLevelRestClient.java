@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -16,7 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-
 package org.apache.pulsar.io.elasticsearch.client.opensearch;
 
 import com.google.common.annotations.VisibleForTesting;
@@ -50,12 +49,12 @@ import org.opensearch.client.RestHighLevelClient;
 import org.opensearch.client.indices.CreateIndexRequest;
 import org.opensearch.client.indices.CreateIndexResponse;
 import org.opensearch.client.indices.GetIndexRequest;
-import org.opensearch.common.Strings;
 import org.opensearch.common.settings.Settings;
-import org.opensearch.common.unit.ByteSizeUnit;
-import org.opensearch.common.unit.ByteSizeValue;
 import org.opensearch.common.unit.TimeValue;
 import org.opensearch.common.xcontent.XContentType;
+import org.opensearch.core.common.Strings;
+import org.opensearch.core.common.unit.ByteSizeUnit;
+import org.opensearch.core.common.unit.ByteSizeValue;
 import org.opensearch.index.query.QueryBuilder;
 import org.opensearch.index.query.QueryBuilders;
 import org.opensearch.search.builder.SearchSourceBuilder;
@@ -113,6 +112,7 @@ public class OpenSearchHighLevelRestClient extends RestClient implements BulkPro
                         .setConnectionRequestTimeout(config.getConnectionRequestTimeoutInMs())
                         .setConnectTimeout(config.getConnectTimeoutInMs())
                         .setSocketTimeout(config.getSocketTimeoutInMs()))
+                .setCompressionEnabled(config.isCompressionEnabled())
                 .setHttpClientConfigCallback(this.configCallback)
                 .setFailureListener(new org.opensearch.client.RestClient.FailureListener() {
                     @Override
@@ -229,7 +229,6 @@ public class OpenSearchHighLevelRestClient extends RestClient implements BulkPro
         if (!Strings.isNullOrEmpty(documentId)) {
             indexRequest.id(documentId);
         }
-        indexRequest.type(config.getTypeName());
         indexRequest.source(documentSource, XContentType.JSON);
 
         IndexResponse indexResponse = client.index(indexRequest, RequestOptions.DEFAULT);
@@ -245,7 +244,6 @@ public class OpenSearchHighLevelRestClient extends RestClient implements BulkPro
     public boolean deleteDocument(String index, String documentId) throws IOException {
         DeleteRequest deleteRequest = Requests.deleteRequest(index);
         deleteRequest.id(documentId);
-        deleteRequest.type(config.getTypeName());
         DeleteResponse deleteResponse = client.delete(deleteRequest, RequestOptions.DEFAULT);
         if (log.isDebugEnabled()) {
             log.debug("delete result {}", deleteResponse.getResult());
@@ -301,7 +299,6 @@ public class OpenSearchHighLevelRestClient extends RestClient implements BulkPro
         if (!Strings.isNullOrEmpty(request.getDocumentId())) {
             indexRequest.id(request.getDocumentId());
         }
-        indexRequest.type(config.getTypeName());
         indexRequest.source(request.getDocumentSource(), XContentType.JSON);
         internalBulkProcessor.add(indexRequest);
     }
@@ -310,7 +307,6 @@ public class OpenSearchHighLevelRestClient extends RestClient implements BulkPro
     public void appendDeleteRequest(BulkProcessor.BulkDeleteRequest request) throws IOException {
         DeleteRequest deleteRequest = new DeleteRequestWithPulsarRecord(request.getIndex(), request.getRecord());
         deleteRequest.id(request.getDocumentId());
-        deleteRequest.type(config.getTypeName());
         internalBulkProcessor.add(deleteRequest);
     }
 
@@ -337,6 +333,16 @@ public class OpenSearchHighLevelRestClient extends RestClient implements BulkPro
         } catch (IOException e) {
             log.warn("Elasticsearch client close error:", e);
         }
+    }
+
+    @VisibleForTesting
+    public void setClient(RestHighLevelClient client) {
+        this.client = client;
+    }
+
+    @VisibleForTesting
+    public void setInternalBulkProcessor(org.opensearch.action.bulk.BulkProcessor internalBulkProcessor) {
+        this.internalBulkProcessor = internalBulkProcessor;
     }
 
     @VisibleForTesting

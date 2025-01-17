@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -59,7 +59,10 @@ public class LeaderElectionServiceTest {
 
     @AfterMethod(alwaysRun = true)
     void shutdown() throws Exception {
-        bkEnsemble.stop();
+        if (bkEnsemble != null) {
+            bkEnsemble.stop();
+            bkEnsemble = null;
+        }
         log.info("---- bk stopped ----");
     }
 
@@ -74,7 +77,7 @@ public class LeaderElectionServiceTest {
         config.setWebServicePort(Optional.of(0));
         config.setClusterName(clusterName);
         config.setAdvertisedAddress("localhost");
-        config.setMetadataStoreUrl("zk:127.0.0.1" + ":" + bkEnsemble.getZookeeperPort());
+        config.setMetadataStoreUrl("zk:127.0.0.1:" + bkEnsemble.getZookeeperPort());
         @Cleanup
         PulsarService pulsar = spyWithClassAndConstructorArgs(MockPulsarService.class, config);
         pulsar.start();
@@ -115,7 +118,8 @@ public class LeaderElectionServiceTest {
         checkLookupException(tenant, namespace, client);
 
         // broker, webService and leaderElectionService is started, and elect is done;
-        leaderBrokerReference.set(new LeaderBroker(pulsar.getWebServiceAddress()));
+        leaderBrokerReference.set(
+                new LeaderBroker(pulsar.getBrokerId(), pulsar.getSafeWebServiceAddress()));
 
         Producer<byte[]> producer = client.newProducer()
                 .topic("persistent://" + tenant + "/" + namespace + "/1p")
@@ -129,10 +133,10 @@ public class LeaderElectionServiceTest {
                     .topic("persistent://" + tenant + "/" + namespace + "/1p")
                     .create();
         } catch (PulsarClientException t) {
-            Assert.assertTrue(t instanceof PulsarClientException.LookupException);
+            Assert.assertTrue(t instanceof PulsarClientException.BrokerMetadataException
+                    || t instanceof PulsarClientException.LookupException);
             Assert.assertTrue(
-                    t.getMessage().contains(
-                            "java.lang.IllegalStateException: The leader election has not yet been completed!"));
+                    t.getMessage().contains("The leader election has not yet been completed"));
         }
     }
 

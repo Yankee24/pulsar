@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -57,7 +57,6 @@ import software.amazon.kinesis.retrieval.KinesisClientRecord;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -69,7 +68,7 @@ public class KinesisSinkTester extends SinkTester<LocalStackContainer> {
     private static final String NAME = "kinesis";
     private static final int LOCALSTACK_SERVICE_PORT = 4566;
     public static final String STREAM_NAME = "my-stream-1";
-    public static final ObjectReader READER = ObjectMapperFactory.getThreadLocal().reader();
+    public static final ObjectReader READER = ObjectMapperFactory.getMapper().reader();
     private final boolean withSchema;
     private KinesisAsyncClient client;
 
@@ -80,6 +79,11 @@ public class KinesisSinkTester extends SinkTester<LocalStackContainer> {
         sinkConfig.put("awsKinesisStreamName", STREAM_NAME);
         sinkConfig.put("awsRegion", "us-east-1");
         sinkConfig.put("awsCredentialPluginParam", "{\"accessKey\":\"access\",\"secretKey\":\"secret\"}");
+        sinkConfig.put("awsEndpoint", NAME);
+        sinkConfig.put("awsEndpointPort", LOCALSTACK_SERVICE_PORT);
+        sinkConfig.put("awsStsEndpoint", NAME);
+        sinkConfig.put("awsStsPort", LOCALSTACK_SERVICE_PORT);
+        sinkConfig.put("skipCertificateValidation", true);
         if (withSchema) {
             sinkConfig.put("messageFormat", "FULL_MESSAGE_IN_JSON_EXPAND_VALUE");
         }
@@ -101,9 +105,6 @@ public class KinesisSinkTester extends SinkTester<LocalStackContainer> {
     public void prepareSink() throws Exception {
         final LocalStackContainer localStackContainer = getServiceContainer();
         final URI endpointOverride = localStackContainer.getEndpointOverride(LocalStackContainer.Service.KINESIS);
-        sinkConfig.put("awsEndpoint", NAME);
-        sinkConfig.put("awsEndpointPort", LOCALSTACK_SERVICE_PORT);
-        sinkConfig.put("skipCertificateValidation", true);
         client = KinesisAsyncClient.builder().credentialsProvider(() -> AwsBasicCredentials.create(
                 "access",
                 "secret"))
@@ -120,17 +121,18 @@ public class KinesisSinkTester extends SinkTester<LocalStackContainer> {
     }
 
     @Override
-    public void stopServiceContainer(PulsarCluster cluster) {
+    public void stopServiceContainer() {
         if (client != null) {
             client.close();
         }
-        super.stopServiceContainer(cluster);
+        super.stopServiceContainer();
     }
 
     @Override
     protected LocalStackContainer createSinkService(PulsarCluster cluster) {
-        return new LocalStackContainer(DockerImageName.parse("localstack/localstack:latest"))
-                .withServices(LocalStackContainer.Service.KINESIS);
+        return new LocalStackContainer(DockerImageName.parse("localstack/localstack:4.0.3"))
+                .withServices(LocalStackContainer.Service.KINESIS, LocalStackContainer.Service.STS)
+                .withEnv("KINESIS_PROVIDER", "kinesalite");
     }
 
     @Override

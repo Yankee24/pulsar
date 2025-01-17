@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,6 +19,7 @@
 package org.apache.pulsar.broker.resourcegroup;
 
 import static org.apache.pulsar.common.util.Runnables.catchingAndLoggingThrowables;
+import com.google.common.annotations.VisibleForTesting;
 import io.prometheus.client.Counter;
 import io.prometheus.client.Summary;
 import java.util.Map;
@@ -52,7 +53,7 @@ import org.slf4j.LoggerFactory;
  *
  * @see PulsarService
  */
-public class ResourceGroupService {
+public class ResourceGroupService implements AutoCloseable{
     /**
      * Default constructor.
      */
@@ -172,7 +173,6 @@ public class ResourceGroupService {
             throw new PulsarAdminException(errMesg);
         }
 
-        rg.resourceGroupPublishLimiter.close();
         rg.resourceGroupPublishLimiter = null;
         resourceGroupsMap.remove(name);
     }
@@ -300,6 +300,21 @@ public class ResourceGroupService {
      */
     public ResourceGroup getNamespaceResourceGroup(NamespaceName namespaceName) {
         return this.namespaceToRGsMap.get(namespaceName);
+    }
+
+    @Override
+    public void close() throws Exception {
+        if (aggregateLocalUsagePeriodicTask != null) {
+            aggregateLocalUsagePeriodicTask.cancel(true);
+        }
+        if (calculateQuotaPeriodicTask != null) {
+            calculateQuotaPeriodicTask.cancel(true);
+        }
+        resourceGroupsMap.clear();
+        tenantToRGsMap.clear();
+        namespaceToRGsMap.clear();
+        topicProduceStats.clear();
+        topicConsumeStats.clear();
     }
 
     /**
@@ -468,48 +483,48 @@ public class ResourceGroupService {
     }
 
     // Visibility for testing.
-    protected static double getRgQuotaByteCount (String rgName, String monClassName) {
-        return rgCalculatedQuotaBytes.labels(rgName, monClassName).get();
+    protected static long getRgQuotaByteCount (String rgName, String monClassName) {
+        return (long) rgCalculatedQuotaBytes.labels(rgName, monClassName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgQuotaMessageCount (String rgName, String monClassName) {
-        return rgCalculatedQuotaMessages.labels(rgName, monClassName).get();
+    protected static long getRgQuotaMessageCount (String rgName, String monClassName) {
+        return (long) rgCalculatedQuotaMessages.labels(rgName, monClassName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgLocalUsageByteCount (String rgName, String monClassName) {
-        return rgLocalUsageBytes.labels(rgName, monClassName).get();
+    protected static long getRgLocalUsageByteCount (String rgName, String monClassName) {
+        return (long) rgLocalUsageBytes.labels(rgName, monClassName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgLocalUsageMessageCount (String rgName, String monClassName) {
-        return rgLocalUsageMessages.labels(rgName, monClassName).get();
+    protected static long getRgLocalUsageMessageCount (String rgName, String monClassName) {
+        return (long) rgLocalUsageMessages.labels(rgName, monClassName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgUpdatesCount (String rgName) {
-        return rgUpdates.labels(rgName).get();
+    protected static long getRgUpdatesCount (String rgName) {
+        return (long) rgUpdates.labels(rgName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgTenantRegistersCount (String rgName) {
-        return rgTenantRegisters.labels(rgName).get();
+    protected static long getRgTenantRegistersCount (String rgName) {
+        return (long) rgTenantRegisters.labels(rgName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgTenantUnRegistersCount (String rgName) {
-        return rgTenantUnRegisters.labels(rgName).get();
+    protected static long getRgTenantUnRegistersCount (String rgName) {
+        return (long) rgTenantUnRegisters.labels(rgName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgNamespaceRegistersCount (String rgName) {
-        return rgNamespaceRegisters.labels(rgName).get();
+    protected static long getRgNamespaceRegistersCount (String rgName) {
+        return (long) rgNamespaceRegisters.labels(rgName).get();
     }
 
     // Visibility for testing.
-    protected static double getRgNamespaceUnRegistersCount (String rgName) {
-        return rgNamespaceUnRegisters.labels(rgName).get();
+    protected static long getRgNamespaceUnRegistersCount (String rgName) {
+        return (long) rgNamespaceUnRegisters.labels(rgName).get();
     }
 
     // Visibility for testing.
@@ -564,17 +579,17 @@ public class ResourceGroupService {
         ServiceConfiguration config = pulsar.getConfiguration();
         long newPeriodInSeconds = config.getResourceUsageTransportPublishIntervalInSecs();
         if (newPeriodInSeconds != this.aggregateLocalUsagePeriodInSeconds) {
-            if (this.aggreagteLocalUsagePeriodicTask == null) {
+            if (this.aggregateLocalUsagePeriodicTask == null) {
                 log.error("aggregateResourceGroupLocalUsages: Unable to find running task to cancel when "
                                 + "publish period changed from {} to {} {}",
                         this.aggregateLocalUsagePeriodInSeconds, newPeriodInSeconds, timeUnitScale);
             } else {
-                boolean cancelStatus = this.aggreagteLocalUsagePeriodicTask.cancel(true);
+                boolean cancelStatus = this.aggregateLocalUsagePeriodicTask.cancel(true);
                 log.info("aggregateResourceGroupLocalUsages: Got status={} in cancel of periodic "
                                 + "when publish period changed from {} to {} {}",
                         cancelStatus, this.aggregateLocalUsagePeriodInSeconds, newPeriodInSeconds, timeUnitScale);
             }
-            this.aggreagteLocalUsagePeriodicTask = pulsar.getExecutor().scheduleAtFixedRate(
+            this.aggregateLocalUsagePeriodicTask = pulsar.getExecutor().scheduleAtFixedRate(
                     catchingAndLoggingThrowables(this::aggregateResourceGroupLocalUsages),
                     newPeriodInSeconds,
                     newPeriodInSeconds,
@@ -671,7 +686,7 @@ public class ResourceGroupService {
                         timeUnitScale);
             this.resourceUsagePublishPeriodInSeconds = newPeriodInSeconds;
             maxIntervalForSuppressingReportsMSecs =
-                    this.resourceUsagePublishPeriodInSeconds * MaxUsageReportSuppressRounds;
+                    TimeUnit.SECONDS.toMillis(this.resourceUsagePublishPeriodInSeconds) * MaxUsageReportSuppressRounds;
         }
     }
 
@@ -679,7 +694,7 @@ public class ResourceGroupService {
         ServiceConfiguration config = this.pulsar.getConfiguration();
         long periodInSecs = config.getResourceUsageTransportPublishIntervalInSecs();
         this.aggregateLocalUsagePeriodInSeconds = this.resourceUsagePublishPeriodInSeconds = periodInSecs;
-        this.aggreagteLocalUsagePeriodicTask = this.pulsar.getExecutor().scheduleAtFixedRate(
+        this.aggregateLocalUsagePeriodicTask = this.pulsar.getExecutor().scheduleAtFixedRate(
                     catchingAndLoggingThrowables(this::aggregateResourceGroupLocalUsages),
                     periodInSecs,
                     periodInSecs,
@@ -690,7 +705,7 @@ public class ResourceGroupService {
                     periodInSecs,
                     this.timeUnitScale);
         maxIntervalForSuppressingReportsMSecs =
-                this.resourceUsagePublishPeriodInSeconds * MaxUsageReportSuppressRounds;
+                TimeUnit.SECONDS.toMillis(this.resourceUsagePublishPeriodInSeconds) * MaxUsageReportSuppressRounds;
 
     }
 
@@ -736,7 +751,7 @@ public class ResourceGroupService {
 
 
     // The task that periodically re-calculates the quota budget for local usage.
-    private ScheduledFuture<?> aggreagteLocalUsagePeriodicTask;
+    private ScheduledFuture<?> aggregateLocalUsagePeriodicTask;
     private long aggregateLocalUsagePeriodInSeconds;
 
     // The task that periodically re-calculates the quota budget for local usage.
@@ -829,4 +844,24 @@ public class ResourceGroupService {
             .name("pulsar_resource_group_calculate_quota_secs")
             .help("Time required to calculate quota of all resource groups, in seconds.")
             .register();
+
+    @VisibleForTesting
+    ConcurrentHashMap getTopicConsumeStats() {
+        return this.topicConsumeStats;
+    }
+
+    @VisibleForTesting
+    ConcurrentHashMap getTopicProduceStats() {
+        return this.topicProduceStats;
+    }
+
+    @VisibleForTesting
+    ScheduledFuture<?> getAggregateLocalUsagePeriodicTask() {
+        return this.aggregateLocalUsagePeriodicTask;
+    }
+
+    @VisibleForTesting
+    ScheduledFuture<?> getCalculateQuotaPeriodicTask() {
+        return this.calculateQuotaPeriodicTask;
+    }
 }

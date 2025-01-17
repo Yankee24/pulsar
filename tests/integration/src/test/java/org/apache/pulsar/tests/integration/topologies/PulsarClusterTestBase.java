@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -19,10 +19,13 @@
 package org.apache.pulsar.tests.integration.topologies;
 
 import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.pulsar.client.admin.PulsarAdmin;
+import org.apache.pulsar.common.naming.TopicDomain;
 import org.testng.annotations.DataProvider;
 
 import java.util.stream.Stream;
@@ -32,6 +35,10 @@ import static java.util.stream.Collectors.joining;
 @Slf4j
 public abstract class PulsarClusterTestBase extends PulsarTestBase {
     protected final Map<String, String> brokerEnvs = new HashMap<>();
+    protected final Map<String, String> bookkeeperEnvs = new HashMap<>();
+    protected final Map<String, String> proxyEnvs = new HashMap<>();
+    protected final List<Integer> brokerAdditionalPorts = new LinkedList<>();
+    protected final List<Integer> bookieAdditionalPorts = new LinkedList<>();
 
     @Override
     protected final void setup() throws Exception {
@@ -80,6 +87,20 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
         };
     }
 
+    @DataProvider
+    public Object[][] serviceUrlAndTopicDomain() {
+        return new Object[][] {
+                {
+                        stringSupplier(() -> getPulsarCluster().getPlainTextServiceUrl()),
+                        TopicDomain.persistent
+                },
+                {
+                        stringSupplier(() -> getPulsarCluster().getPlainTextServiceUrl()),
+                        TopicDomain.non_persistent
+                },
+        };
+    }
+
     protected PulsarAdmin pulsarAdmin;
 
     protected PulsarCluster pulsarCluster;
@@ -88,7 +109,7 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
         return pulsarCluster;
     }
 
-    private static Supplier<String> stringSupplier(Supplier<String> supplier) {
+    protected static Supplier<String> stringSupplier(Supplier<String> supplier) {
         return supplier;
     }
 
@@ -103,7 +124,9 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
 
         PulsarClusterSpec.PulsarClusterSpecBuilder specBuilder = PulsarClusterSpec.builder()
                 .clusterName(clusterName)
-                .brokerEnvs(brokerEnvs);
+                .brokerEnvs(brokerEnvs)
+                .proxyEnvs(proxyEnvs)
+                .brokerAdditionalPorts(brokerAdditionalPorts);
 
         setupCluster(beforeSetupCluster(clusterName, specBuilder).build());
     }
@@ -119,6 +142,10 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
     }
 
     protected void setupCluster(PulsarClusterSpec spec) throws Exception {
+        setupCluster(spec, true);
+    }
+
+    protected void setupCluster(PulsarClusterSpec spec, boolean doInit) throws Exception {
         incrementSetupNumber();
         log.info("Setting up cluster {} with {} bookies, {} brokers",
                 spec.clusterName(), spec.numBookies(), spec.numBrokers());
@@ -127,7 +154,7 @@ public abstract class PulsarClusterTestBase extends PulsarTestBase {
 
         beforeStartCluster();
 
-        pulsarCluster.start();
+        pulsarCluster.start(doInit);
 
         pulsarAdmin = PulsarAdmin.builder().serviceHttpUrl(pulsarCluster.getHttpServiceUrl()).build();
 

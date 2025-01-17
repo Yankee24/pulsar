@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -59,11 +59,6 @@ public class CompactorMXBeanImplTest {
         assertTrue(compaction.getCompactionWriteThroughput() > 0L);
         mxBean.addCompactionLatencyOp(topic, 10, TimeUnit.NANOSECONDS);
         assertTrue(compaction.getCompactionLatencyBuckets()[0] > 0L);
-        mxBean.reset();
-        assertEquals(compaction.getCompactionRemovedEventCount(), 0, 0);
-        assertEquals(compaction.getCompactionSucceedCount(), 0, 0);
-        assertEquals(compaction.getCompactionFailedCount(), 0, 0);
-        assertEquals(compaction.getCompactionDurationTimeInMills(), 0, 0);
     }
 
 }

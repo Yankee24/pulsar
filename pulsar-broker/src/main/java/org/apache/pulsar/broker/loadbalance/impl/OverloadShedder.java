@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -36,7 +36,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Load shedding strategy which will attempt to shed exactly one bundle on brokers which are overloaded, that is, whose
  * maximum system resource usage exceeds loadBalancerBrokerOverloadedThresholdPercentage. To see which resources are
- * considered when determining the maximum system resource, see {@link LocalBrokerData#getMaxResourceUsage()}. A bundle
+ * considered when determining the maximum system resource, see
+ * {@link LocalBrokerData#getMaxResourceUsageWithWeight(double, double, double, double)}. A bundle
  * is recommended for unloading off that broker if and only if the following conditions hold: The broker has at
  * least two bundles assigned and the broker has at least one bundle that has not been unloaded recently according to
  * LoadBalancerSheddingGracePeriodMinutes. The unloaded bundle will be the most expensive bundle in terms of message
@@ -71,7 +72,11 @@ public class OverloadShedder implements LoadSheddingStrategy {
         loadData.getBrokerData().forEach((broker, brokerData) -> {
 
             final LocalBrokerData localData = brokerData.getLocalData();
-            final double currentUsage = localData.getMaxResourceUsage();
+            final double currentUsage = localData.getMaxResourceUsageWithWeight(
+                    conf.getLoadBalancerCPUResourceWeight(),
+                    conf.getLoadBalancerDirectMemoryResourceWeight(),
+                    conf.getLoadBalancerBandwidthInResourceWeight(),
+                    conf.getLoadBalancerBandwidthOutResourceWeight());
             if (currentUsage < overloadThreshold) {
                 if (log.isDebugEnabled()) {
                     log.debug("[{}] Broker is not overloaded, ignoring at this point ({})", broker,
@@ -114,9 +119,7 @@ public class OverloadShedder implements LoadSheddingStrategy {
                 }).filter(e -> {
                     // Only consider bundles that were not already unloaded recently
                     return !recentlyUnloadedBundles.containsKey(e.getLeft());
-                }).filter(e ->
-                        localData.getBundles().contains(e.getLeft())
-                ).sorted((e1, e2) -> {
+                }).sorted((e1, e2) -> {
                     // Sort by throughput in reverse order
                     return Double.compare(e2.getRight(), e1.getRight());
                 }).forEach(e -> {

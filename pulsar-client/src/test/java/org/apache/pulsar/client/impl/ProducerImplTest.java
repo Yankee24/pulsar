@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -18,11 +18,17 @@
  */
 package org.apache.pulsar.client.impl;
 
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertNull;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.withSettings;
+import static org.testng.Assert.*;
+
 import java.nio.ByteBuffer;
 import org.apache.pulsar.client.api.Schema;
+import org.apache.pulsar.client.impl.metrics.LatencyHistogram;
 import org.apache.pulsar.common.api.proto.MessageMetadata;
+import org.mockito.Mockito;
 import org.testng.annotations.Test;
 
 public class ProducerImplTest {
@@ -36,6 +42,7 @@ public class ProducerImplTest {
         for (int i = 0; i < totalChunks; i++) {
             ProducerImpl.OpSendMsg opSendMsg =
                     ProducerImpl.OpSendMsg.create(
+                            LatencyHistogram.NOOP,
                             MessageImpl.create(new MessageMetadata(), ByteBuffer.allocate(0), Schema.STRING, null),
                             null, 0, null);
             opSendMsg.chunkedMessageCtx = ctx;
@@ -46,5 +53,17 @@ public class ProducerImplTest {
 
         // check if the ctx is deallocated successfully.
         assertNull(ctx.firstChunkMessageId);
+    }
+
+    @Test
+    public void testPopulateMessageSchema() {
+        MessageImpl<?> msg = mock(MessageImpl.class);
+        when(msg.hasReplicateFrom()).thenReturn(true);
+        when(msg.getSchemaInternal()).thenReturn(mock(Schema.class));
+        when(msg.getSchemaInfoForReplicator()).thenReturn(null);
+        ProducerImpl<?> producer = mock(ProducerImpl.class, withSettings()
+                .defaultAnswer(Mockito.CALLS_REAL_METHODS));
+        assertTrue(producer.populateMessageSchema(msg, null));
+        verify(msg).setSchemaState(MessageImpl.SchemaState.Ready);
     }
 }

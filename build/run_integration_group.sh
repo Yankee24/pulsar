@@ -25,13 +25,16 @@ set -o pipefail
 set -o errexit
 
 JAVA_MAJOR_VERSION="$(java -version 2>&1 |grep " version " | awk -F\" '{ print $2 }' | awk -F. '{ if ($1=="1") { print $2 } else { print $1 } }')"
+# Used to shade run test on Java 8, because the latest TestNG requires Java 11 or higher.
+TESTNG_VERSION_JAVA_8="7.3.0"
+MOCKITO_VERSION_JAVA_8="4.11.0"
 
 # lists all active maven modules with given parameters
 # parses the modules from the "mvn initialize" output
 # returns a CSV value
 mvn_list_modules() {
   (
-    mvn -B -ntp "$@" initialize \
+    mvn -B -ntp -Dscan=false "$@" initialize \
       | grep -- "-< .* >-" \
       | sed -E 's/.*-< (.*) >-.*/\1/' \
       | tr '\n' ',' | sed 's/,$/\n/'
@@ -44,26 +47,14 @@ mvn_list_modules() {
 # 2. runs "mvn -pl [active_modules] -am install [given_params]" to build and install required dependencies
 # 3. finally runs tests with "mvn -pl [active_modules] test [given_params]"
 mvn_run_integration_test() {
-  (
   set +x
-  RETRY=""
-  # wrap with retry.sh script if next parameter is "--retry"
-  if [[ "$1" == "--retry" ]]; then
-    RETRY="${SCRIPT_DIR}/retry.sh"
-    shift
-  fi
-  # skip wrapping with retry.sh script if next parameter is "--no-retry"
-  if [[ "$1" == "--no-retry" ]]; then
-    RETRY=""
-    shift
-  fi
   # skip test run if next parameter is "--build-only"
-  build_only=0
+  local build_only=0
   if [[ "$1" == "--build-only" ]]; then
       build_only=1
       shift
   fi
-  skip_build_deps=0
+  local skip_build_deps=0
   while [[ "$1" == "--skip-build-deps" ]]; do
     skip_build_deps=1
     shift
@@ -73,8 +64,32 @@ mvn_run_integration_test() {
       clean_arg="clean"
       shift
   fi
+  local use_fail_fast=1
+  if [[ "$GITHUB_ACTIONS" == "true" && "$GITHUB_EVENT_NAME" != "pull_request" ]]; then
+    use_fail_fast=0
+  fi
+  if [[ "$1" == "--no-fail-fast" ]]; then
+    use_fail_fast=0
+    shift;
+  fi
+  local failfast_args
+  if [ $use_fail_fast -eq 1 ]; then
+    failfast_args="-DtestFailFast=true -DtestFailFastFile=/tmp/test_fail_fast_killswitch.$$.$RANDOM.$(date +%s) --fail-fast"
+  else
+    failfast_args="-DtestFailFast=false --fail-at-end"
+  fi
+  local coverage_args=""
+  if [[ "$1" == "--coverage" ]]; then
+      if [ ! -d /tmp/jacocoDir ]; then
+          mkdir /tmp/jacocoDir
+          sudo chmod 0777 /tmp/jacocoDir || chmod 0777 /tmp/jacocoDir
+      fi
+      coverage_args="-Pcoverage -Dintegrationtest.coverage.enabled=true -Dintegrationtest.coverage.dir=/tmp/jacocoDir"
+      shift
+  fi
+  (
   cd "$SCRIPT_DIR"/../tests
-  modules=$(mvn_list_modules -DskipDocker "$@")
+  local modules=$(mvn_list_modules -DskipDocker "$@")
   cd ..
   set -x
   if [ $skip_build_deps -ne 1 ]; then
@@ -85,10 +100,10 @@ mvn_run_integration_test() {
   if [[ $build_only -ne 1 ]]; then
     echo "::group::Run tests for " "$@"
     # use "verify" instead of "test"
-    $RETRY mvn -B -ntp -pl "$modules" -DskipDocker -DskipSourceReleaseAssembly=true -Dspotbugs.skip=true -Dlicense.skip=true -Dcheckstyle.skip=true -Drat.skip=true -DredirectTestOutputToFile=false $clean_arg verify "$@"
+    mvn -B -ntp -pl "$modules" $failfast_args $coverage_args -DskipDocker -DskipSourceReleaseAssembly=true -Dspotbugs.skip=true -Dlicense.skip=true -Dcheckstyle.skip=true -Drat.skip=true -DredirectTestOutputToFile=false $clean_arg verify "$@"
     echo "::endgroup::"
     set +x
-    "$SCRIPT_DIR/pulsar_ci_tool.sh" move_test_reports
+    "$SCRIPT_DIR/pulsar_ci_tool.sh" move_test_reports || true
   fi
   )
 }
@@ -98,7 +113,11 @@ test_group_shade() {
 }
 
 test_group_shade_build() {
-  mvn_run_integration_test --build-only "$@" -DShadeTests -DtestForkCount=1 -DtestReuseFork=false
+  local additional_args
+  if [[ $JAVA_MAJOR_VERSION -ge 8 && $JAVA_MAJOR_VERSION -lt 11 ]]; then
+      additional_args="$additional_args -Dtestng.version=$TESTNG_VERSION_JAVA_8 -Dmockito.version=$MOCKITO_VERSION_JAVA_8"
+  fi
+  mvn_run_integration_test --build-only "$@" -DShadeTests -DtestForkCount=1 -DtestReuseFork=false $additional_args
 }
 
 test_group_shade_run() {
@@ -106,12 +125,17 @@ test_group_shade_run() {
   if [[ $JAVA_MAJOR_VERSION -gt 8 && $JAVA_MAJOR_VERSION -lt 17 ]]; then
     additional_args="-Dmaven.compiler.source=$JAVA_MAJOR_VERSION -Dmaven.compiler.target=$JAVA_MAJOR_VERSION"
   fi
+
+  if [[ $JAVA_MAJOR_VERSION -ge 8 && $JAVA_MAJOR_VERSION -lt 11 ]]; then
+      additional_args="$additional_args -Dtestng.version=$TESTNG_VERSION_JAVA_8 -Dmockito.version=$MOCKITO_VERSION_JAVA_8"
+  fi
+
   mvn_run_integration_test --skip-build-deps --clean "$@" -Denforcer.skip=true -DShadeTests -DtestForkCount=1 -DtestReuseFork=false $additional_args
 }
 
 test_group_backwards_compat() {
-  mvn_run_integration_test --retry "$@" -DintegrationTestSuiteFile=pulsar-backwards-compatibility.xml -DintegrationTests
-  mvn_run_integration_test --retry "$@" -DBackwardsCompatTests -DtestForkCount=1 -DtestReuseFork=false
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-backwards-compatibility.xml -DintegrationTests
+  mvn_run_integration_test "$@" -DBackwardsCompatTests -DtestForkCount=1 -DtestReuseFork=false
 }
 
 test_group_cli() {
@@ -130,25 +154,43 @@ test_group_messaging() {
   # run integration messaging tests
   mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-messaging.xml -DintegrationTests
   # run integration proxy tests
-  mvn_run_integration_test --retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-proxy.xml -DintegrationTests
-  # run integration proxy with WebSocket tests
-  mvn_run_integration_test --retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-proxy-websocket.xml -DintegrationTests
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-proxy.xml -DintegrationTests
+  # run integration WebSocket tests
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-websocket.xml -DintegrationTests
+  # run integration TLS tests
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-tls.xml -DintegrationTests
+}
+
+test_group_loadbalance() {
+   mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-loadbalance.xml -DintegrationTests
+}
+
+test_group_plugin() {
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-plugin.xml -DintegrationTests
 }
 
 test_group_schema() {
-  mvn_run_integration_test --retry "$@" -DintegrationTestSuiteFile=pulsar-schema.xml -DintegrationTests
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-schema.xml -DintegrationTests
 }
 
 test_group_standalone() {
   mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-standalone.xml -DintegrationTests
 }
 
+test_group_upgrade() {
+ mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-upgrade.xml -DintegrationTests
+}
+
 test_group_transaction() {
-  mvn_run_integration_test --retry "$@" -DintegrationTestSuiteFile=pulsar-transaction.xml -DintegrationTests
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-transaction.xml -DintegrationTests
+}
+
+test_group_metrics() {
+   mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-metrics.xml -DintegrationTests
 }
 
 test_group_tiered_filesystem() {
-  mvn_run_integration_test --retry "$@" -DintegrationTestSuiteFile=tiered-filesystem-storage.xml -DintegrationTests
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=tiered-filesystem-storage.xml -DintegrationTests
 }
 
 test_group_tiered_jcloud() {
@@ -157,24 +199,24 @@ test_group_tiered_jcloud() {
 
 test_group_pulsar_connectors_thread() {
   # run integration function
-  mvn_run_integration_test --retry "$@" -DintegrationTestSuiteFile=pulsar-thread.xml -DintegrationTests -Dgroups=function
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-thread.xml -DintegrationTests -Dgroups=function
 
   # run integration source
-  mvn_run_integration_test --retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-thread.xml -DintegrationTests -Dgroups=source
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-thread.xml -DintegrationTests -Dgroups=source
 
   # run integration sink
-  mvn_run_integration_test --retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-thread.xml -DintegrationTests -Dgroups=sink
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-thread.xml -DintegrationTests -Dgroups=sink
 }
 
 test_group_pulsar_connectors_process() {
   # run integration function
-  mvn_run_integration_test --retry "$@" -DintegrationTestSuiteFile=pulsar-process.xml -DintegrationTests -Dgroups=function
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-process.xml -DintegrationTests -Dgroups=function
 
   # run integration source
-  mvn_run_integration_test --retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-process.xml -DintegrationTests -Dgroups=source
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-process.xml -DintegrationTests -Dgroups=source
 
   # run integration sink
-  mvn_run_integration_test --retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-process.xml -DintegrationTests -Dgroups=sink
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-process.xml -DintegrationTests -Dgroups=sink
 }
 
 test_group_sql() {
@@ -182,12 +224,12 @@ test_group_sql() {
 }
 
 test_group_pulsar_io() {
-  mvn_run_integration_test --no-retry "$@" -DintegrationTestSuiteFile=pulsar-io-sources.xml -DintegrationTests -Dgroups=source
-  mvn_run_integration_test --no-retry --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-io-sinks.xml -DintegrationTests -Dgroups=sink
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-io-sources.xml -DintegrationTests -Dgroups=source
+  mvn_run_integration_test --skip-build-deps "$@" -DintegrationTestSuiteFile=pulsar-io-sinks.xml -DintegrationTests -Dgroups=sink
 }
 
 test_group_pulsar_io_ora() {
-  mvn_run_integration_test --no-retry "$@" -DintegrationTestSuiteFile=pulsar-io-ora-source.xml -DintegrationTests -Dgroups=source -DtestRetryCount=0
+  mvn_run_integration_test "$@" -DintegrationTestSuiteFile=pulsar-io-ora-source.xml -DintegrationTests -Dgroups=source -DtestRetryCount=0
 }
 
 list_test_groups() {

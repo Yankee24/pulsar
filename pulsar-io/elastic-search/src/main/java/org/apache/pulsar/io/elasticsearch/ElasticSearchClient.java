@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -33,6 +33,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.tuple.Pair;
 import org.apache.pulsar.client.api.schema.GenericObject;
 import org.apache.pulsar.functions.api.Record;
+import org.apache.pulsar.io.core.SinkContext;
 import org.apache.pulsar.io.elasticsearch.client.BulkProcessor;
 import org.apache.pulsar.io.elasticsearch.client.RestClient;
 import org.apache.pulsar.io.elasticsearch.client.RestClientFactory;
@@ -53,11 +54,19 @@ public class ElasticSearchClient implements AutoCloseable {
     final Set<String> indexCache = new HashSet<>();
     final Map<String, String> topicToIndexCache = new HashMap<>();
 
-    final AtomicReference<Exception> irrecoverableError = new AtomicReference<>();
+    final AtomicReference<State> state = new AtomicReference<>(State.Open);
+
     private final IndexNameFormatter indexNameFormatter;
 
-    public ElasticSearchClient(ElasticSearchConfig elasticSearchConfig) {
+    enum State {
+        Open, Failed, Closed
+    }
+
+    final SinkContext sinkContext;
+
+    public ElasticSearchClient(ElasticSearchConfig elasticSearchConfig, SinkContext sinkContext) {
         this.config = elasticSearchConfig;
+        this.sinkContext = sinkContext;
         if (this.config.getIndexName() != null) {
             this.indexNameFormatter = new IndexNameFormatter(this.config.getIndexName());
         } else {
@@ -76,7 +85,7 @@ public class ElasticSearchClient implements AutoCloseable {
                     final Record record = bulkOperationList.get(index++).getPulsarRecord();
                     if (result.isError()) {
                         record.fail();
-                        checkForIrrecoverableError(result);
+                        checkForIrrecoverableError(record, result);
                     } else {
                         record.ack();
                     }
@@ -94,25 +103,24 @@ public class ElasticSearchClient implements AutoCloseable {
         };
         this.backoffRetry = new RandomExponentialRetry(elasticSearchConfig.getMaxRetryTimeInSec());
         this.client = retry(() -> RestClientFactory.createClient(config, bulkListener), -1, "client creation");
+        state.set(State.Open);
     }
 
     void failed(Exception e) {
-        if (irrecoverableError.compareAndSet(null, e)) {
-            log.error("Irrecoverable error:", e);
+        if (state.compareAndSet(State.Open, State.Failed)) {
+            sinkContext.fatal(e);
         }
     }
 
-    boolean isFailed() {
-        return irrecoverableError.get() != null;
-    }
-
-    void checkForIrrecoverableError(BulkProcessor.BulkOperationResult result) {
+    void checkForIrrecoverableError(Record<?> record, BulkProcessor.BulkOperationResult result) {
         if (!result.isError()) {
             return;
         }
         final String errorCause = result.getError();
+        boolean isMalformed = false;
         for (String error : MALFORMED_ERRORS) {
             if (errorCause.contains(error)) {
+                isMalformed = true;
                 switch (config.getMalformedDocAction()) {
                     case IGNORE:
                         break;
@@ -132,11 +140,18 @@ public class ElasticSearchClient implements AutoCloseable {
                 }
             }
         }
+        if (!isMalformed) {
+            log.warn("Bulk request failed, message id=[{}] index={} error={}",
+                    record.getMessage()
+                            .map(m -> m.getMessageId().toString())
+                            .orElse(""),
+                    result.getIndex(), result.getError());
+        }
     }
 
     public void bulkIndex(Record record, Pair<String, String> idAndDoc) throws Exception {
         try {
-            checkNotFailed();
+            checkState();
             checkIndexExists(record);
             final String indexName = indexName(record);
             final String documentId = idAndDoc.getLeft();
@@ -165,7 +180,7 @@ public class ElasticSearchClient implements AutoCloseable {
      */
     public boolean indexDocument(Record<GenericObject> record, Pair<String, String> idAndDoc) throws Exception {
         try {
-            checkNotFailed();
+            checkState();
             checkIndexExists(record);
 
             final String indexName = indexName(record);
@@ -188,7 +203,7 @@ public class ElasticSearchClient implements AutoCloseable {
 
     public void bulkDelete(Record<GenericObject> record, String id) throws Exception {
         try {
-            checkNotFailed();
+            checkState();
             checkIndexExists(record);
 
             final String indexName = indexName(record);
@@ -215,7 +230,7 @@ public class ElasticSearchClient implements AutoCloseable {
      */
     public boolean deleteDocument(Record<GenericObject> record, String id) throws Exception {
         try {
-            checkNotFailed();
+            checkState();
             checkIndexExists(record);
             final String indexName = indexName(record);
             final boolean deleted = client.deleteDocument(indexName, id);
@@ -245,11 +260,17 @@ public class ElasticSearchClient implements AutoCloseable {
             client.close();
             client = null;
         }
+        state.compareAndSet(State.Open, State.Closed);
     }
 
-    private void checkNotFailed() throws Exception {
-        if (irrecoverableError.get() != null) {
-            throw irrecoverableError.get();
+    @VisibleForTesting
+    void setClient(RestClient client) {
+        this.client = client;
+    }
+
+    private void checkState() {
+        if (state.get() != State.Open) {
+            throw new IllegalStateException(String.format("Elasticsearch client is in %s state", state.get().name()));
         }
     }
 

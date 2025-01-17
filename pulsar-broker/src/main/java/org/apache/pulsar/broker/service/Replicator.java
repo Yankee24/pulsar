@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,11 +27,13 @@ public interface Replicator {
 
     void startProducer();
 
-    ReplicatorStatsImpl getStats();
+    Topic getLocalTopic();
 
-    CompletableFuture<Void> disconnect();
+    ReplicatorStatsImpl computeStats();
 
-    CompletableFuture<Void> disconnect(boolean b);
+    CompletableFuture<Void> terminate();
+
+    CompletableFuture<Void> disconnect(boolean failIfHasBacklog, boolean closeTheStartingProducer);
 
     void updateRates();
 
@@ -41,9 +43,18 @@ public interface Replicator {
         //No-op
     }
 
+    default void updateRateLimiter() {
+    }
+
     default Optional<DispatchRateLimiter> getRateLimiter() {
         return Optional.empty();
     }
 
     boolean isConnected();
+
+    long getNumberOfEntriesInBacklog();
+
+    boolean isTerminated();
+
+    ReplicatorStatsImpl getStats();
 }
